@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ps26147-blind-sdr"
+version = "3.0.0"
+authors = [{ name = "SDR Core Team" }]
+description = "Universal Blind SDR Signal Interceptor and Multi-Hypothesis Blackboard Demodulator"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24.0,<2.0.0",
+    "scipy>=1.10.0",
+    "scikit-commpy>=0.8.0",
+    "galois>=0.3.6",
+    "scikit-learn>=1.3.0",
+    "PyQt6>=6.5.0",
+    "pyqtgraph>=0.13.3",
+    "pytest>=7.4.0"
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

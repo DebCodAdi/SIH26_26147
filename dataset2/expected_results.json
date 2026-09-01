@@ -1,0 +1,69 @@
+{
+  "case1_normal_high_snr.iq": {
+    "description": "QPSK, block interleave 8xN, conv code k=7 r=1/2, SNR=12dB",
+    "expected_modulation": "QPSK",
+    "expected_interleaver": "block",
+    "expected_fec": "convolutional_k7_r1/2",
+    "expected_behavior": "FULL_DECODE_SUCCESS",
+    "expected_message": "SIH2026",
+    "expected_exact_match": true,
+    "notes": "Clean operating region (proven >99% exact-match at this SNR in our 200-trial test). Any correct implementation must recover this exactly."
+  },
+  "case2_moderate_snr.iq": {
+    "description": "Same signal as case 1, SNR=5dB",
+    "expected_modulation": "QPSK",
+    "expected_interleaver": "block",
+    "expected_fec": "convolutional_k7_r1/2",
+    "expected_behavior": "LIKELY_DECODE_SUCCESS",
+    "expected_message": "SIH2026",
+    "expected_exact_match": "~94.5% probability per our Monte Carlo curve - NOT guaranteed, this is intentional",
+    "notes": "This is the honest edge of reliable operation. If it fails here occasionally, that's correct behavior, not a bug - flag confidence accordingly rather than reporting false certainty."
+  },
+  "case3_below_noise_floor.iq": {
+    "description": "Same signal, SNR=-8dB (deep in noise)",
+    "expected_behavior": "INSUFFICIENT_SIGNAL_EVIDENCE",
+    "expected_message": null,
+    "notes": "FAIL CONDITION: if the system outputs any confident modulation/message guess here, that is a real bug - a correct implementation must recognize it cannot reliably classify this and say so."
+  },
+  "case4_too_short.iq": {
+    "description": "Only 20 symbols - below any reasonable minimum for cumulant-based AMC",
+    "expected_behavior": "INSUFFICIENT_SAMPLES",
+    "notes": "FAIL CONDITION: forcing a modulation classification on this few symbols and reporting it with high confidence is a bug."
+  },
+  "case5_corrupted_nan.iq": {
+    "description": "Clean QPSK signal with NaN injected at samples 50-59",
+    "expected_behavior": "NO_CRASH_FLAG_CORRUPTED_REGION",
+    "notes": "FAIL CONDITION: pipeline crashes with an unhandled exception, OR silently produces a result without mentioning the corrupted region."
+  },
+  "case6_truncated_midblock.iq": {
+    "description": "Same signal cut at 50% - ends mid interleave-block/FEC-block",
+    "expected_behavior": "PARTIAL_DECODE_OR_INCOMPLETE_BLOCK_FLAG",
+    "notes": "FAIL CONDITION: attempting to decode the incomplete trailing block as if it were complete and reporting a confident (likely wrong) message."
+  },
+  "case7_pure_noise_no_signal.iq": {
+    "description": "Pure Gaussian noise, no embedded signal whatsoever",
+    "expected_behavior": "NO_SIGNAL_DETECTED",
+    "notes": "FAIL CONDITION: reporting any modulation type or frame-sync lock on pure noise is a false-positive bug."
+  },
+  "case8_unsupported_modulation.iq": {
+    "description": "256-QAM-like signal - outside the 7 supported modulation types (BPSK/QPSK/8PSK/16QAM/64QAM/2FSK/4FSK)",
+    "expected_behavior": "UNKNOWN_MODULATION",
+    "notes": "FAIL CONDITION: forcing this into the nearest supported class (e.g. calling it 16-QAM) instead of reporting it as unrecognized."
+  },
+  "case9_no_valid_header.iq": {
+    "description": "Clean QPSK, SNR=15dB, correctly demodulable bits, but no Barker/CCSDS preamble embedded anywhere - random payload only",
+    "expected_modulation": "QPSK",
+    "expected_behavior": "DEMOD_SUCCEEDS_BUT_NO_FRAME_SYNC_FOUND",
+    "notes": "FAIL CONDITION: this isolates the frame-sync path specifically (unlike case7 which is pure noise and gets caught earlier at signal-detection). If the system reports a false frame lock or fabricates a header/payload split here, that is exactly the false-positive bug this case exists to catch."
+  },
+  "case10_different_interleaver_param.iq": {
+    "description": "QPSK, block interleave with rows=16 (DIFFERENT from cases 1-2 which use rows=8), conv code, SNR=8dB",
+    "expected_modulation": "QPSK",
+    "expected_interleaver": "block",
+    "expected_interleaver_param": 16,
+    "expected_fec": "convolutional_k7_r1/2",
+    "expected_message": "RADAR42",
+    "expected_exact_match": true,
+    "notes": "This case specifically tests that interleaver-parameter detection is a genuine search, not silently hardcoded to rows=8 from the other test cases. If the pipeline reports rows=8 or fails here, that is a real bug, not bad luck."
+  }
+}
