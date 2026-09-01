@@ -99,3 +99,13 @@ temp/
 *.tmp
 eval_results_*.json
 bench_log_*.txt
+
+# Scratch and migration Python scripts
+scratch_*.py
+debug_*.py
+test_temp*.py
+temp_*.py
+update_pipeline.py
+eval_dataset2.py
+test_cma.py
+verify_dataset.py
