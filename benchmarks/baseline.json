@@ -1,0 +1,134 @@
+[
+  {
+    "modulation": "BPSK",
+    "snr_db": 30.0,
+    "trials": 6,
+    "ber_median": 0.0,
+    "ber_best": 0.0,
+    "amc_accuracy": 0.8333333333333334,
+    "decode_success": 1.0,
+    "cfo_err_median_hz": 0.2920898978409099,
+    "baud_err_median_hz": 10.168947155034402
+  },
+  {
+    "modulation": "BPSK",
+    "snr_db": 20.0,
+    "trials": 6,
+    "ber_median": 0.22142857142857142,
+    "ber_best": 0.0,
+    "amc_accuracy": 0.8333333333333334,
+    "decode_success": 0.3333333333333333,
+    "cfo_err_median_hz": 1.0112287601755554,
+    "baud_err_median_hz": 2369.670222138713
+  },
+  {
+    "modulation": "BPSK",
+    "snr_db": 10.0,
+    "trials": 6,
+    "ber_median": 1.0,
+    "ber_best": 0.4,
+    "amc_accuracy": 0.16666666666666666,
+    "decode_success": 0.0,
+    "cfo_err_median_hz": 9960.44598531458,
+    "baud_err_median_hz": 29312.05177398947
+  },
+  {
+    "modulation": "QPSK",
+    "snr_db": 30.0,
+    "trials": 6,
+    "ber_median": 0.0,
+    "ber_best": 0.0,
+    "amc_accuracy": 0.6666666666666666,
+    "decode_success": 1.0,
+    "cfo_err_median_hz": 1.3304056742064887,
+    "baud_err_median_hz": 34.70735415542367
+  },
+  {
+    "modulation": "QPSK",
+    "snr_db": 20.0,
+    "trials": 6,
+    "ber_median": 0.43214285714285716,
+    "ber_best": 0.0,
+    "amc_accuracy": 0.3333333333333333,
+    "decode_success": 0.16666666666666666,
+    "cfo_err_median_hz": 7.226471032679939,
+    "baud_err_median_hz": 103.70523859598325
+  },
+  {
+    "modulation": "QPSK",
+    "snr_db": 10.0,
+    "trials": 6,
+    "ber_median": 0.4,
+    "ber_best": 0.36428571428571427,
+    "amc_accuracy": 0.16666666666666666,
+    "decode_success": 0.0,
+    "cfo_err_median_hz": 12945.385886701755,
+    "baud_err_median_hz": 33461.62095022773
+  },
+  {
+    "modulation": "8PSK",
+    "snr_db": 30.0,
+    "trials": 6,
+    "ber_median": 0.39361702127659576,
+    "ber_best": 0.0,
+    "amc_accuracy": 1.0,
+    "decode_success": 0.0,
+    "cfo_err_median_hz": 2883.4242824050866,
+    "baud_err_median_hz": 54.66290117803874
+  },
+  {
+    "modulation": "8PSK",
+    "snr_db": 20.0,
+    "trials": 6,
+    "ber_median": 0.40070921985815605,
+    "ber_best": 0.09929078014184398,
+    "amc_accuracy": 0.5,
+    "decode_success": 0.0,
+    "cfo_err_median_hz": 5241.848705668661,
+    "baud_err_median_hz": 1632.5717051368738
+  },
+  {
+    "modulation": "8PSK",
+    "snr_db": 10.0,
+    "trials": 6,
+    "ber_median": 0.39539007092198586,
+    "ber_best": 0.375886524822695,
+    "amc_accuracy": 0.3333333333333333,
+    "decode_success": 0.0,
+    "cfo_err_median_hz": 7106.619125775498,
+    "baud_err_median_hz": 29787.294826172976
+  },
+  {
+    "modulation": "16-QAM",
+    "snr_db": 30.0,
+    "trials": 6,
+    "ber_median": 0.37142857142857144,
+    "ber_best": 0.3535714285714286,
+    "amc_accuracy": 1.0,
+    "decode_success": 0.0,
+    "cfo_err_median_hz": 3125.593173626962,
+    "baud_err_median_hz": 65.25004062994412
+  },
+  {
+    "modulation": "16-QAM",
+    "snr_db": 20.0,
+    "trials": 6,
+    "ber_median": 0.35,
+    "ber_best": 0.3392857142857143,
+    "amc_accuracy": 0.3333333333333333,
+    "decode_success": 0.0,
+    "cfo_err_median_hz": 669.8063736377392,
+    "baud_err_median_hz": 7109.3215329849445
+  },
+  {
+    "modulation": "16-QAM",
+    "snr_db": 10.0,
+    "trials": 6,
+    "ber_median": 0.37857142857142856,
+    "ber_best": 0.3678571428571429,
+    "amc_accuracy": 0.5,
+    "decode_success": 0.0,
+    "cfo_err_median_hz": 6104.092453559608,
+    "baud_err_median_hz": 97614.01892634961
+  }
+]

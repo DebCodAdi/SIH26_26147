@@ -1,0 +1,11 @@
+file        : qpsk_easy.cf32
+modulation  : QPSK
+fec         : NONE
+Fs (Hz)     : 200000.0
+baud (Hz)   : 50000.0
+SPS         : 4.00
+CFO (Hz)    : 350.0
+SNR (dB)    : 30.0
+payload     : PS26147_TEST_PAYLOAD_PACKET_9999
+samples     : 716
+size (bytes): 5728

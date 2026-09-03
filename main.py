@@ -46,6 +46,12 @@ def main():
     payload_ascii = ''.join([chr(b) if 32 <= b <= 126 or b in (10, 13) else '.' for b in payload_bytes]) if isinstance(payload_bytes, bytes) else str(payload_bytes)
     payload_hex = payload_bytes.hex() if isinstance(payload_bytes, bytes) else ""
 
+    # Plain-language message, only trustworthy when the CRC-32 checked out
+    if result.get('crc_valid') and isinstance(payload_bytes, bytes):
+        readable_message = payload_bytes.decode('ascii', errors='replace').strip()
+    else:
+        readable_message = None
+
     if args.json:
         # Exclude raw numpy arrays for JSON serialization
         clean_res = {
@@ -54,6 +60,7 @@ def main():
         }
         clean_res['payload_ascii'] = payload_ascii
         clean_res['payload_hex'] = payload_hex
+        clean_res['message'] = readable_message
         print(json.dumps(clean_res, indent=2))
     else:
         print("\n" + "=" * 60)
@@ -77,6 +84,19 @@ def main():
         print("-" * 60)
         print("Decoded Payload (HEX):")
         print(payload_hex)
+        print("=" * 60)
+        if readable_message is not None:
+            print("  RECOVERED MESSAGE  (CRC-32 VERIFIED)")
+            print("=" * 60)
+            print()
+            print(f"    {readable_message}")
+            print()
+        else:
+            print("  NO VERIFIED MESSAGE")
+            print("=" * 60)
+            print()
+            print("    CRC-32 did not validate - the decode is not trustworthy.")
+            print()
         print("=" * 60 + "\n")
 
 if __name__ == "__main__":

@@ -1,8 +1,16 @@
 """Phase 3: Robust 6D Cumulant Feature Extraction & Full Covariance Mahalanobis AMC."""
+import os
 import numpy as np
 import scipy.signal
 
+_MODELS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
+_TRAINED_PARAMS_PATH = os.path.join(_MODELS_DIR, "classifier_params.npz")
+
 # Theoretical / Calibrated 6D Feature Centroids [|C40|, |C42|, |C60|, std_mag, diff_phase_std, peak_count]
+# These are the ORIGINAL fallback constants, used only for classes/systems where no trained
+# artifact is available yet (see _load_trained_params() below, which overrides these at import
+# time with empirically-fit centroids/covariances from models/classifier_params.npz whenever
+# that file exists — regenerate it with `python -m src.train_classifier`).
 CALIBRATED_CENTROIDS = {
     "BPSK":   np.array([1.90, 1.90, 14.50, 0.15, 2.80, 2.0], dtype=np.float32),
     "QPSK":   np.array([0.90, 0.90,  0.40, 0.20, 2.60, 5.0], dtype=np.float32),
@@ -42,6 +50,45 @@ def _build_calibrated_precisions():
     return precisions
 
 CALIBRATED_PRECISIONS = _build_calibrated_precisions()
+
+def _load_trained_params(npz_path: str = _TRAINED_PARAMS_PATH) -> bool:
+    """
+    Overrides the hand-typed CALIBRATED_CENTROIDS/CALIBRATED_PRECISIONS above with empirically
+    fit centroids and full 6x6 covariance matrices from models/classifier_params.npz, if that
+    artifact exists (produced by `python -m src.train_classifier`). Classes not present in the
+    trained artifact (e.g. GMSK, for which no real synthetic generator exists yet) keep their
+    original hand-typed fallback values. Returns True if any class was overridden.
+    """
+    if not os.path.exists(npz_path):
+        return False
+    try:
+        data = np.load(npz_path, allow_pickle=False)
+        classes = [str(c) for c in data["classes"]]
+    except Exception:
+        return False
+
+    loaded_any = False
+    for mod in classes:
+        centroid_key = f"centroid_{mod}"
+        cov_key = f"cov_{mod}"
+        if centroid_key not in data:
+            continue
+        try:
+            mu = data[centroid_key].astype(np.float32)
+            if cov_key in data:
+                cov = data[cov_key].astype(np.float64)
+            elif f"variance_{mod}" in data:
+                cov = np.diag(data[f"variance_{mod}"].astype(np.float64) + 1e-4)
+            else:
+                continue
+            CALIBRATED_CENTROIDS[mod] = mu
+            CALIBRATED_PRECISIONS[mod] = np.linalg.inv(cov).astype(np.float32)
+            loaded_any = True
+        except Exception:
+            continue
+    return loaded_any
+
+TRAINED_MODEL_LOADED = _load_trained_params()
 
 # Asymptotic noise centroid under pure Gaussian noise
 NOISE_CENTROID = np.array([0.05, 0.05, 0.10, 0.463, 1.81, 1.0], dtype=np.float32)

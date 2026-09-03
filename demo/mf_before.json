@@ -1,0 +1,68 @@
+[
+  {
+    "modulation": "BPSK",
+    "snr_db": 30.0,
+    "trials": 8,
+    "ber_median": 0.0,
+    "ber_best": 0.0,
+    "amc_accuracy": 0.875,
+    "decode_success": 1.0,
+    "cfo_err_median_hz": 0.2920898978409099,
+    "baud_err_median_hz": 9.998986686125136
+  },
+  {
+    "modulation": "BPSK",
+    "snr_db": 20.0,
+    "trials": 8,
+    "ber_median": 0.0,
+    "ber_best": 0.0,
+    "amc_accuracy": 0.875,
+    "decode_success": 0.5,
+    "cfo_err_median_hz": 1.0112287601755554,
+    "baud_err_median_hz": 45.92183200234649
+  },
+  {
+    "modulation": "BPSK",
+    "snr_db": 10.0,
+    "trials": 8,
+    "ber_median": 1.0,
+    "ber_best": 0.4,
+    "amc_accuracy": 0.25,
+    "decode_success": 0.0,
+    "cfo_err_median_hz": 8967.068758780302,
+    "baud_err_median_hz": 29312.05177398947
+  },
+  {
+    "modulation": "QPSK",
+    "snr_db": 30.0,
+    "trials": 8,
+    "ber_median": 0.0,
+    "ber_best": 0.0,
+    "amc_accuracy": 0.75,
+    "decode_success": 1.0,
+    "cfo_err_median_hz": 1.9395663462295971,
+    "baud_err_median_hz": 34.70735415542367
+  },
+  {
+    "modulation": "QPSK",
+    "snr_db": 20.0,
+    "trials": 8,
+    "ber_median": 0.2125,
+    "ber_best": 0.0,
+    "amc_accuracy": 0.25,
+    "decode_success": 0.125,
+    "cfo_err_median_hz": 7.226471032679939,
+    "baud_err_median_hz": 122.52923438637663
+  },
+  {
+    "modulation": "QPSK",
+    "snr_db": 10.0,
+    "trials": 8,
+    "ber_median": 0.4,
+    "ber_best": 0.36428571428571427,
+    "amc_accuracy": 0.125,
+    "decode_success": 0.0,
+    "cfo_err_median_hz": 11327.49527355158,
+    "baud_err_median_hz": 30677.91480076139
+  }
+]

@@ -22,13 +22,22 @@ def generate_test_vector(
     baud_rate: float = 50000.0,
     cfo_hz: float = 350.0,
     snr_db: float = 25.0,
-    multipath: bool = False
+    multipath: bool = False,
+    seed: int | None = None,
+    truth_out: dict | None = None
 ) -> tuple[np.ndarray, bytes]:
     """
     Generates a realistic synthetic SDR capture with specified modulation, FEC,
     interleaving, carrier frequency offset (CFO), and optional multipath / AWGN.
     Returns (iq_samples_complex64, ground_truth_payload).
+
+    If `truth_out` is a dict, it is populated in place with receiver ground truth
+    ('coded_bits', 'tx_symbols', 'preamble_len', 'postamble_len', 'sps', 'fs', 'baud_rate'),
+    which the benchmark harness in tools/benchmark_rx.py needs in order to measure true
+    bit error rate rather than an EVM proxy.
     """
+    rng = np.random.default_rng(seed)
+
     # 1. Add CRC-32 to Payload
     crc = zlib.crc32(payload_text).to_bytes(4, byteorder='big')
     data_frame = payload_text + crc
@@ -104,6 +113,22 @@ def generate_test_vector(
         postamble = np.zeros(24, dtype=np.complex64)
         tx_symbols = np.concatenate([preamble, syms, postamble])
 
+    elif mod_type == "64-QAM":
+        pad_len = (6 - (len(raw_bits) % 6)) % 6
+        if pad_len > 0:
+            raw_bits = np.append(raw_bits, np.zeros(pad_len, dtype=int))
+        b_mat = raw_bits.reshape((-1, 6))
+        gray3_to_level = {
+            (0, 0, 0): -7, (0, 0, 1): -5, (0, 1, 1): -3, (0, 1, 0): -1,
+            (1, 1, 0): 1, (1, 1, 1): 3, (1, 0, 1): 5, (1, 0, 0): 7
+        }
+        i_syms = np.array([gray3_to_level[tuple(row[0:3])] for row in b_mat])
+        q_syms = np.array([gray3_to_level[tuple(row[3:6])] for row in b_mat])
+        syms = ((i_syms + 1j * q_syms) / np.sqrt(42.0)).astype(np.complex64)
+        preamble = (BARKER_11 + 0j).astype(np.complex64)
+        postamble = np.zeros(24, dtype=np.complex64)
+        tx_symbols = np.concatenate([preamble, syms, postamble])
+
     elif mod_type in ["2-FSK", "4-FSK"]:
         # Continuous phase FSK waveform synthesis
         sps = fs / baud_rate
@@ -124,8 +149,20 @@ def generate_test_vector(
         n = np.arange(len(tx_wave))
         tx_cfo = tx_wave * np.exp(1j * 2.0 * np.pi * cfo_hz * n / fs)
         noise_pwr = 10.0 ** (-snr_db / 10.0)
-        noise = (np.random.randn(len(tx_cfo)) + 1j * np.random.randn(len(tx_cfo))) * np.sqrt(noise_pwr / 2.0)
+        noise = (rng.standard_normal(len(tx_cfo)) + 1j * rng.standard_normal(len(tx_cfo))) * np.sqrt(noise_pwr / 2.0)
         return (tx_cfo + noise).astype(np.complex64), payload_text
+
+    if truth_out is not None:
+        truth_out.update({
+            "coded_bits": np.asarray(raw_bits, dtype=np.uint8).copy(),
+            "tx_symbols": np.asarray(syms, dtype=np.complex64).copy(),
+            "preamble_len": int(len(preamble)),
+            "postamble_len": int(len(postamble)),
+            "sps": float(fs / baud_rate),
+            "fs": float(fs),
+            "baud_rate": float(baud_rate),
+            "payload": payload_text,
+        })
 
     # 4. Pulse Shaping (RRC / Nyquist)
     sps = fs / baud_rate
@@ -145,7 +182,7 @@ def generate_test_vector(
         tx_impaired = tx_cfo
 
     noise_pwr = 10.0 ** (-snr_db / 10.0)
-    noise = (np.random.randn(len(tx_impaired)) + 1j * np.random.randn(len(tx_impaired))) * np.sqrt(noise_pwr / 2.0)
+    noise = (rng.standard_normal(len(tx_impaired)) + 1j * rng.standard_normal(len(tx_impaired))) * np.sqrt(noise_pwr / 2.0)
     rx_wave = (tx_impaired + noise).astype(np.complex64)
 
     return rx_wave, payload_text

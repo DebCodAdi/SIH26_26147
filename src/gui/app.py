@@ -121,6 +121,22 @@ class MainWindow(QMainWindow):
         self.const_plot.addItem(self.const_scatter)
         viz_layout.addWidget(self.const_plot, stretch=1)
 
+        # Time-Frequency Waterfall (spectrogram)
+        self.waterfall_plot = pg.PlotWidget(title="Time-Frequency Waterfall (Spectrogram)")
+        self.waterfall_plot.setLabel('left', 'Time', units='ms')
+        self.waterfall_plot.setLabel('bottom', 'Frequency', units='kHz')
+        self.waterfall_plot.showGrid(x=True, y=True, alpha=0.2)
+        self.waterfall_img = pg.ImageItem()
+        self.waterfall_plot.addItem(self.waterfall_img)
+        # Perceptually-ordered colour map so power reads correctly in a projected demo.
+        _wf_stops = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
+        _wf_colors = np.array([
+            [0, 0, 40, 255], [20, 20, 140, 255], [0, 170, 170, 255],
+            [255, 200, 40, 255], [255, 255, 220, 255]
+        ], dtype=np.ubyte)
+        self.waterfall_img.setLookupTable(pg.ColorMap(_wf_stops, _wf_colors).getLookupTable(0.0, 1.0, 256))
+        viz_layout.addWidget(self.waterfall_plot, stretch=1)
+
         main_layout.addLayout(viz_layout, stretch=4)
 
         # 3. Comprehensive Telemetry HUD & Status Badges
@@ -314,6 +330,9 @@ class MainWindow(QMainWindow):
             self.spectrum_curve.setData(x=(spec_freqs / 1000.0).astype(float), y=psd_db.astype(float))
             self.spectrum_plot.enableAutoRange()
 
+        # Time-frequency waterfall visualization
+        self.update_waterfall(res.get("waterfall_iq"), float(res.get("fs_hz", 0.0)))
+
         # Decoded payload terminal
         payload_bytes = res.get("payload", b"")
         if isinstance(payload_bytes, bytes):
@@ -382,6 +401,50 @@ Shannon Entropy:    {ent:.4f} bits/byte ({ent_cls})
 {payload_hex}
 """
         self.txt_payload.setText(terminal_output.strip())
+
+    def update_waterfall(self, iq: np.ndarray | None, fs_hz: float):
+        """
+        Renders the time-frequency waterfall (spectrogram) of the captured baseband.
+
+        Works for both complex captures (.iq/.cf32/.raw, two-sided spectrum) and real-valued
+        .wav audio promoted to an analytic signal during ingestion, since a complex input
+        simply yields a two-sided spectrogram from the same call.
+        """
+        if iq is None or len(iq) < 64 or fs_hz <= 0:
+            return
+        try:
+            import scipy.signal
+            iq = np.asarray(iq)
+            nperseg = int(min(256, max(32, 2 ** int(np.floor(np.log2(max(32, len(iq) // 64)))))))
+            freqs, times, sxx = scipy.signal.spectrogram(
+                iq, fs=fs_hz, nperseg=nperseg, noverlap=nperseg // 2,
+                return_onesided=False, mode='psd', detrend=False
+            )
+            # fftshift so negative frequencies plot to the left of DC.
+            order = np.argsort(freqs)
+            freqs = freqs[order]
+            sxx = sxx[order, :]
+
+            sxx_db = 10.0 * np.log10(np.abs(sxx) + 1e-12)
+            # Clip to a fixed dynamic range above the noise floor so the signal stays visible
+            # regardless of absolute capture gain.
+            floor_db = float(np.percentile(sxx_db, 5))
+            peak_db = float(np.max(sxx_db))
+            if peak_db - floor_db < 1.0:
+                peak_db = floor_db + 1.0
+
+            # ImageItem indexes [x, y]; x = frequency, y = time.
+            self.waterfall_img.setImage(sxx_db.T, autoLevels=False, levels=(floor_db, peak_db))
+            f_khz = freqs / 1000.0
+            t_ms = times * 1000.0
+            self.waterfall_img.setRect(pg.QtCore.QRectF(
+                float(f_khz[0]), float(t_ms[0]),
+                float(f_khz[-1] - f_khz[0]), float(max(t_ms[-1] - t_ms[0], 1e-6))
+            ))
+            self.waterfall_plot.setXRange(float(f_khz[0]), float(f_khz[-1]), padding=0.02)
+            self.waterfall_plot.setYRange(float(t_ms[0]), float(t_ms[-1]), padding=0.02)
+        except Exception as e:
+            self.txt_payload.append(f"[Waterfall] Render failed: {e}")
 
     def on_error(self, err_msg: str):
         self.progress_bar.setRange(0, 100)

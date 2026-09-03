@@ -55,7 +55,8 @@ class BlackboardArbiter:
         mod_type: str = "QPSK",
         fsk_bits: np.ndarray | None = None,
         pre_pll_symbols: np.ndarray | None = None,
-        ranked_mods: list[str] | None = None
+        ranked_mods: list[str] | None = None,
+        aux_symbol_streams: list[np.ndarray] | None = None
     ) -> list[HypothesisResult]:
         """
         Multi-hypothesis evaluation with Multi-Core Parallel ThreadPool dispatch.
@@ -84,6 +85,21 @@ class BlackboardArbiter:
             if len(pre_results) > 0 and pre_results[0].crc_valid:
                 return pre_results
             results.extend(pre_results)
+
+        # 1c. Auxiliary symbol streams (e.g. the un-synchronised stream). Preamble correlation
+        # can lock onto a false peak and slice away part of the payload, in which case the only
+        # recoverable copy of the data is the stream that was never cut. Those streams are cheap
+        # extra hypotheses and cost nothing when sync was correct.
+        for aux in (aux_symbol_streams or []):
+            if aux is None or len(aux) == 0:
+                continue
+            pwr = float(np.mean(np.abs(aux) ** 2))
+            aux_norm = (aux / np.sqrt(pwr)).astype(np.complex64) if pwr > 0 else aux
+            aux_modes = demap_linear(aux_norm, mod_type=mod_type)
+            aux_results = self._evaluate_raw_bits_parallel(aux_modes, mod_type)
+            if len(aux_results) > 0 and aux_results[0].crc_valid:
+                return aux_results
+            results.extend(aux_results)
 
         # 2. Parallel Fallback Multi-Hypothesis Sweep across remaining linear modulations
         if ranked_mods:

@@ -38,8 +38,16 @@ def correct_iq_imbalance_gsop(x: np.ndarray, threshold: float = 0.03) -> np.ndar
     rho = np.mean(I * Q) / np.sqrt(E_I2 * E_Q2)
     gain_imbalance = abs(E_I2 - E_Q2) / (E_I2 + E_Q2)
 
+    # The decision threshold must scale with the sampling uncertainty of these estimates, not
+    # be a fixed constant. For genuinely balanced I/Q the sample correlation still fluctuates
+    # with standard error ~1/sqrt(N), which for a short burst (N=684) is ~0.038 — larger than
+    # the old fixed 0.03 threshold. That made this correction fire on perfectly clean signals
+    # and distort them: measured, it turned a 4 Hz carrier-offset error into a 2148 Hz one.
+    # Requiring ~3 standard errors keeps real imbalance detected while leaving noise alone.
+    stat_threshold = max(threshold, 3.0 / np.sqrt(max(len(x), 1)))
+
     # Only correct if imbalance is genuine to avoid noise amplification
-    if abs(rho) > threshold or gain_imbalance > threshold:
+    if abs(rho) > stat_threshold or gain_imbalance > stat_threshold:
         Q_orth = Q - (rho * np.sqrt(E_Q2 / E_I2)) * I
         E_Q_orth2 = np.mean(Q_orth ** 2)
         if E_Q_orth2 > 1e-12:

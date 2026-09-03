@@ -1,0 +1,11 @@
+file        : bpsk_conv.cf32
+modulation  : BPSK
+fec         : CONV
+Fs (Hz)     : 200000.0
+baud (Hz)   : 50000.0
+SPS         : 4.00
+CFO (Hz)    : 350.0
+SNR (dB)    : 30.0
+payload     : PS26147_TEST_PAYLOAD_PACKET_9999
+samples     : 2540
+size (bytes): 20320

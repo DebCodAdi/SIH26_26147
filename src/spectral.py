@@ -52,22 +52,204 @@ def estimate_blind_fs(x: np.ndarray, default_fs: float | None = None) -> tuple[f
         64000.0, 96000.0, 100000.0, 125000.0, 250000.0
     ]
 
+    # IMPORTANT — what is and is not knowable here.
+    #
+    # The only thing measurable from the samples is alpha_norm = Rs/Fs, a *dimensionless
+    # ratio*. Absolute Fs is therefore NOT recoverable from sample values: a 200 kHz capture
+    # of a 50 kBaud signal and a 400 kHz capture of a 100 kBaud signal produce a bit-identical
+    # sample array. Sample rate is metadata, and the trustworthy sources for it are the WAV
+    # RIFF header, a SigMF sidecar, or the operator (--fs). This function is an explicitly
+    # prior-driven best guess for headerless raw captures, and always reports is_estimated=True.
+    #
+    # The previous formulation searched Fs and baud independently and scored
+    # |alpha_norm*Fs - baud|, which is exactly zero for every (Fs, baud) pair sharing the
+    # measured ratio. With a strict < comparison the winner was then decided by grid ordering
+    # rather than by the signal, which produced arbitrary answers (measured: 200k->400k,
+    # 100k->400k, 400k->4800).
+    #
+    # This formulation is well posed: each standard baud implies exactly one Fs, which is then
+    # snapped to the nearest standard capture rate and scored on snap error and SPS
+    # plausibility. Genuinely tied ratios are broken by an explicit popularity prior instead of
+    # by list order.
+    if alpha_norm <= 1e-9:
+        return 200000.0, True
+
+    # Ordered most- to least-common in practice; index becomes a small tie-break penalty.
+    fs_popularity = [
+        200000.0, 250000.0, 1000000.0, 2000000.0, 100000.0, 48000.0, 96000.0, 192000.0,
+        500000.0, 400000.0, 125000.0, 300000.0, 150000.0, 64000.0, 32000.0, 24000.0,
+        20000.0, 16000.0, 12000.0, 9600.0, 8000.0, 4800.0, 2400.0,
+    ]
+    popularity_rank = {f: i for i, f in enumerate(fs_popularity)}
+
     best_fs = 200000.0
     best_score = float('inf')
-
-    for cand_fs in sdr_standard_fs_grid:
-        cand_rs = alpha_norm * cand_fs
-        for b in standard_bauds:
-            baud_err = abs(cand_rs - b) / b
-            sps = cand_fs / b
-            sps_round_err = abs(sps - round(sps))
-            prio = 0.5 if b in (50000.0, 20000.0, 4800.0, 9600.0, 40000.0, 48000.0, 96000.0) else 1.0
-            score = (baud_err * 3.0 + sps_round_err * 1.5) * prio
-            if score < best_score:
-                best_score = score
-                best_fs = cand_fs
+    for b in standard_bauds:
+        implied_fs = b / alpha_norm
+        cand_fs = min(sdr_standard_fs_grid, key=lambda f: abs(f - implied_fs))
+        snap_err = abs(cand_fs - implied_fs) / implied_fs
+        sps = cand_fs / b
+        if sps < 1.0 or sps > 64.0:
+            continue
+        sps_round_err = abs(sps - round(sps))
+        rank_penalty = 0.02 * popularity_rank.get(cand_fs, len(fs_popularity))
+        score = snap_err * 3.0 + sps_round_err * 1.5 + rank_penalty
+        if score < best_score:
+            best_score = score
+            best_fs = cand_fs
 
     return float(best_fs), True
+
+def _whitened_line_spectrum(sig: np.ndarray, fs: float) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Full-resolution whitened spectrum of a real cyclostationary feature signal.
+
+    Resolution matters more than segment averaging here: captures are often only a few hundred
+    symbols long, so splitting them into Welch segments costs more in frequency resolution than
+    it buys in variance (measured: ~35 kHz symbol-rate error with 256-sample segments versus
+    ~70 Hz with the full-length transform). A running-median whitening keeps a genuine narrow
+    cyclic line prominent against whatever shape the broadband floor has.
+    """
+    sig = sig - np.mean(sig)
+    if len(sig) < 32:
+        return np.zeros(0), np.zeros(0)
+    mag = np.abs(np.fft.rfft(sig * np.hanning(len(sig))))
+    freqs = np.fft.rfftfreq(len(sig), d=1.0 / fs)
+    med_len = min(31, (len(mag) // 8) * 2 + 1)
+    if med_len >= 3:
+        floor = scipy.signal.medfilt(mag, med_len) + 1e-12
+        mag = mag / floor
+    return freqs, mag
+
+
+def estimate_baud_rate(x_bb: np.ndarray, fs: float) -> tuple[float, float]:
+    """
+    Blind symbol-rate estimation from cyclostationary lines, by cross-path consensus.
+
+    Three complementary feature signals each expose a symbol-rate line:
+      * squared envelope |x|^2                 -> linear modulations (PSK/QAM)
+      * instantaneous frequency                -> FSK-family modulations
+      * delay-and-multiply Re{x[n]x*[n-1]}     -> general cyclostationary line
+
+    Taking the single strongest peak from whichever path happened to score highest is fragile:
+    at 20 dB SNR that produced symbol-rate estimates scattered from 5 kHz to 92 kHz against a
+    true 50 kHz. Independent feature paths agreeing on a frequency is far stronger evidence
+    than one path's argmax, so candidates that two paths corroborate are preferred, and the
+    peak is parabolically interpolated for sub-bin resolution.
+
+    Returns (baud_rate_hz, confidence) where confidence is the whitened peak height.
+    """
+    n = len(x_bb)
+    if n < 64:
+        return fs / 4.0, 0.0
+
+    env_sq = np.abs(x_bb) ** 2
+    if n > 2:
+        dm = x_bb[1:] * np.conj(x_bb[:-1])
+        inst_freq = np.angle(dm)
+        delay_mult = np.real(dm)
+    else:
+        inst_freq = np.zeros(1)
+        delay_mult = np.zeros(1)
+
+    candidates: list[tuple[float, float]] = []  # (frequency, confidence)
+    for feature in (env_sq, inst_freq, delay_mult):
+        freqs, mag = _whitened_line_spectrum(feature, fs)
+        if len(freqs) == 0:
+            continue
+        band = (freqs > fs * 0.02) & (freqs < fs * 0.48)
+        if not np.any(band):
+            continue
+        f_band, m_band = freqs[band], mag[band]
+        k = int(np.argmax(m_band))
+        f_peak = float(f_band[k])
+        if 0 < k < len(m_band) - 1:
+            a, b, c = float(m_band[k - 1]), float(m_band[k]), float(m_band[k + 1])
+            denom = a - 2.0 * b + c
+            if abs(denom) > 1e-12:
+                delta = 0.5 * (a - c) / denom
+                if abs(delta) <= 1.0 and len(f_band) > 1:
+                    f_peak += delta * float(f_band[1] - f_band[0])
+        candidates.append((f_peak, float(m_band[k])))
+
+    if not candidates:
+        return fs / 4.0, 0.0
+
+    # Coarse but noise-robust prior: for a Nyquist-shaped linear modulation the occupied
+    # bandwidth is approximately the symbol rate (times 1+rolloff). Unlike a spectral-line
+    # argmax this integrates energy across many bins, so it degrades gracefully with SNR and
+    # can be used to reject line candidates that are wildly implausible.
+    bw_estimate = estimate_occupied_bandwidth(x_bb, fs)
+    # Once the occupied bandwidth approaches the full capture bandwidth the measurement is
+    # noise-dominated rather than signal-derived, so it is only trusted below that point.
+    # (Measured: at 10 dB it reports 150 kHz for a 50 kHz symbol rate on a 200 kHz capture.)
+    if not (0.0 < bw_estimate < fs * 0.5):
+        bw_estimate = 0.0
+
+    tol = max(fs * 0.01, 1.0)
+    best_rs, best_score = candidates[0][0], -1.0
+    for i, (f_i, c_i) in enumerate(candidates):
+        agree = sum(1 for j, (f_j, _) in enumerate(candidates) if j != i and abs(f_j - f_i) < tol)
+        score = c_i * (1.0 + 2.0 * agree)
+        if bw_estimate > 0.0:
+            # Penalise candidates far from the bandwidth-derived symbol rate. A typical
+            # excess bandwidth of 0-35% means the true ratio sits near 1.0-1.35.
+            ratio = f_i / bw_estimate
+            if 0.7 <= ratio <= 1.45:
+                score *= 3.0
+            elif ratio < 0.4 or ratio > 2.2:
+                score *= 0.2
+        if score > best_score:
+            best_score, best_rs = score, f_i
+
+    # If no detected line is plausible against a *trusted* bandwidth measurement, prefer the
+    # bandwidth-derived symbol rate — it degrades far more gracefully than a line argmax.
+    if bw_estimate > 0.0 and not (0.7 <= best_rs / bw_estimate <= 1.45):
+        best_rs = bw_estimate
+
+    best_conf = max(c for _, c in candidates)
+    return float(best_rs), float(best_conf)
+
+
+def estimate_occupied_bandwidth(x: np.ndarray, fs: float, energy_fraction: float = 0.90) -> float:
+    """
+    Occupied bandwidth (Hz) containing `energy_fraction` of the above-noise-floor power.
+
+    Estimated from a segment-averaged PSD with the noise floor subtracted, so it stays usable
+    at low SNR where narrow-line detection fails. For a linear modulation this approximates
+    the symbol rate scaled by (1 + excess bandwidth).
+    """
+    if len(x) < 64:
+        return 0.0
+    nperseg = int(min(len(x), max(64, 2 ** int(np.floor(np.log2(max(64, len(x) // 4)))))))
+    freqs, psd = scipy.signal.welch(
+        x, fs, nperseg=nperseg, noverlap=nperseg // 2,
+        return_onesided=False, detrend=False
+    )
+    freqs = np.fft.fftshift(freqs)
+    psd = np.fft.fftshift(psd)
+
+    noise_floor = float(np.percentile(psd, 20))
+    psd_net = np.maximum(psd - noise_floor, 0.0)
+    total = float(np.sum(psd_net))
+    if total <= 0.0:
+        return 0.0
+
+    # Symmetric growth around the spectral centroid until the energy fraction is captured.
+    centre = int(np.argmax(psd_net))
+    acc = float(psd_net[centre])
+    lo = hi = centre
+    target = total * energy_fraction
+    while acc < target and (lo > 0 or hi < len(psd_net) - 1):
+        take_low = lo > 0 and (hi >= len(psd_net) - 1 or psd_net[lo - 1] >= psd_net[hi + 1])
+        if take_low:
+            lo -= 1
+            acc += float(psd_net[lo])
+        else:
+            hi += 1
+            acc += float(psd_net[hi])
+    return float(abs(freqs[hi] - freqs[lo]))
+
 
 def estimate_cfo_and_baud(x: np.ndarray, fs: float) -> tuple[float, float, float, np.ndarray]:
     """
@@ -141,11 +323,20 @@ def estimate_cfo_and_baud(x: np.ndarray, fs: float) -> tuple[float, float, float
     f_est4 = float(f_est4 + round((f_est_psd - f_est4) / (fs / 4.0)) * (fs / 4.0))
     f_est8 = float(f_est8 + round((f_est_psd - f_est8) / (fs / 8.0)) * (fs / 8.0))
 
-    # Select best CFO estimate by comparing non-linear carrier lines
+    # Select best CFO estimate by comparing non-linear carrier lines.
+    # Cross-validate against the 3-way consensus median first: a rectangular/wide-sidelobe
+    # pulse shape can put a spurious spectral line at a +-symbol-rate offset from the true
+    # M-th power carrier tone, which can occasionally out-score the true line in a single
+    # candidate while the other two (different M, different sidelobe sensitivity) still land
+    # near the truth. Down-weight any candidate that disagrees with the consensus median by
+    # more than a modest fraction of Fs before ranking by raw SNR score.
+    med_f = float(np.median([f_est2, f_est4, f_est8]))
+    consensus_tol = max(fs * 0.01, 5.0)
+    raw_scores = [snr2 / 1.5, snr4 / 1.0, snr8 / 0.8]
+    f_ests = [f_est2, f_est4, f_est8]
     scores = [
-        (snr2 / 1.5, f_est2),
-        (snr4 / 1.0, f_est4),
-        (snr8 / 0.8, f_est8),
+        (raw_scores[i] if abs(f_ests[i] - med_f) < consensus_tol else raw_scores[i] * 0.1, f_ests[i])
+        for i in range(3)
     ]
     scores.sort(key=lambda item: item[0], reverse=True)
     best_score, best_f = scores[0]
@@ -167,66 +358,8 @@ def estimate_cfo_and_baud(x: np.ndarray, fs: float) -> tuple[float, float, float
     n = np.arange(len(x))
     x_bb = x * np.exp(-1j * 2.0 * np.pi * f_cfo * n / fs)
 
-    # 5. Multi-Path Baud Rate Extraction via Spectral Prominence
-    # Path A: Envelope-Squared (Linear Modulations)
-    env_sq = np.abs(x_bb)**2
-    env_sq_zero = env_sq - np.mean(env_sq)
-    w_env = np.hanning(len(env_sq_zero))
-    fft_lin = np.abs(np.fft.rfft(env_sq_zero * w_env))
-    f_bins = np.fft.rfftfreq(len(env_sq_zero), d=1.0/fs)
-
-    med_filter_len = min(31, len(fft_lin) // 8 * 2 + 1)
-    if med_filter_len >= 3:
-        smooth_lin = scipy.signal.medfilt(fft_lin, med_filter_len) + 1e-6
-        prom_lin = fft_lin / smooth_lin
-    else:
-        prom_lin = fft_lin
-
-    # Path B: Instantaneous Frequency Differential (FSK)
-    inst_freq = np.angle(x_bb[1:] * np.conj(x_bb[:-1]))
-    inst_freq_zero = inst_freq - np.mean(inst_freq)
-    w_fsk = np.hanning(len(inst_freq_zero))
-    fft_fsk = np.abs(np.fft.rfft(inst_freq_zero * w_fsk))
-    f_bins_fsk = np.fft.rfftfreq(len(inst_freq_zero), d=1.0/fs)
-
-    if med_filter_len >= 3:
-        smooth_fsk = scipy.signal.medfilt(fft_fsk, med_filter_len) + 1e-6
-        prom_fsk = fft_fsk / smooth_fsk
-    else:
-        prom_fsk = fft_fsk
-
-    # Path C: Delay-and-Multiply Cyclostationary Line (D = 1)
-    if len(x_bb) > 2:
-        dm = x_bb[1:] * np.conj(x_bb[:-1])
-        dm_zero = dm - np.mean(dm)
-        fft_dm = np.abs(np.fft.rfft(np.real(dm_zero) * w_fsk))
-        if med_filter_len >= 3:
-            smooth_dm = scipy.signal.medfilt(fft_dm, med_filter_len) + 1e-6
-            prom_dm = fft_dm / smooth_dm
-        else:
-            prom_dm = fft_dm
-    else:
-        prom_dm = prom_lin
-
-    mask = (f_bins > fs * 0.02) & (f_bins < fs * 0.48)
-    mask_fsk = (f_bins_fsk > fs * 0.02) & (f_bins_fsk < fs * 0.48)
-
-    max_prom_lin = float(np.max(prom_lin[mask])) if np.any(mask) else 0.0
-    max_prom_fsk = float(np.max(prom_fsk[mask_fsk])) if np.any(mask_fsk) else 0.0
-    max_prom_dm  = float(np.max(prom_dm[mask_fsk])) if np.any(mask_fsk) else 0.0
-
-    prom_scores = [(max_prom_lin, 'LIN'), (max_prom_fsk, 'FSK'), (max_prom_dm, 'DM')]
-    prom_scores.sort(key=lambda item: item[0], reverse=True)
-    best_prom, best_path = prom_scores[0]
-
-    if best_path == 'LIN' and np.any(mask):
-        rs = float(f_bins[mask][np.argmax(prom_lin[mask])])
-    elif best_path == 'FSK' and np.any(mask_fsk):
-        rs = float(f_bins_fsk[mask_fsk][np.argmax(prom_fsk[mask_fsk])])
-    elif np.any(mask_fsk):
-        rs = float(f_bins_fsk[mask_fsk][np.argmax(prom_dm[mask_fsk])])
-    else:
-        rs = float(fs / 4.0)
+    # 5. Baud Rate Extraction via segment-averaged cyclostationary line detection.
+    rs, best_prom = estimate_baud_rate(x_bb, fs)
 
     # 6. Check for 1 SPS (unfiltered symbol-spaced captures)
     r1 = np.abs(np.corrcoef(x_bb[1:], x_bb[:-1])[0, 1]) if len(x_bb) > 2 else 0.0

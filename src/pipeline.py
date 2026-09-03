@@ -1,7 +1,7 @@
 """Universal End-to-End Pipeline Core for Headless CLI, Verification, and Real-Time GUI."""
 import os
 import numpy as np
-from src.ingestion import auto_ingest_and_clean, ingest_wav
+from src.ingestion import auto_ingest_and_clean, ingest_wav, detect_signal_mme
 from src.spectral import estimate_cfo_and_baud, resample_to_2sps
 from src.equalizers import apply_twopass_cma, apply_gardner_ted
 from src.classifier import extract_features, evaluate_mahalanobis_ood, rank_modulation_hypotheses, compute_constellation_evm
@@ -90,8 +90,16 @@ def run_full_pipeline(
     except Exception as e:
         return {"status": f"ERROR_IQ_CORRECTION: {e}", "stage": "INGESTION", "format": fmt, "fs_hz": float(fs), "crc_valid": False, "payload": b""}
 
+    # Signal presence is gated by the Marcenko-Pastur eigenvalue (MME) detector, which is
+    # robust down to ~-15 dB SNR and does not assume any particular modulation/constant-modulus
+    # model. The older kurtosis-based estimate_snr_m2m4() is systematically biased (it reads
+    # single-digit dB even on genuinely 30 dB clean signals, because it evaluates the raw
+    # pulse-shaped/unsynchronized waveform rather than a matched-filtered, symbol-synchronized
+    # one) and must not be used as a hard reject gate. It is retained below purely as an
+    # approximate telemetry value.
+    signal_present, mme_stat = detect_signal_mme(x_clean)
     snr_db = estimate_snr_m2m4(x_clean)
-    if snr_db < -5.0:
+    if not signal_present:
         return {
             "status": "NO_SIGNAL_DETECTED",
             "stage": "SPECTRAL_ANALYSIS",
@@ -108,7 +116,7 @@ def run_full_pipeline(
             "fec_type": "NONE",
             "interleaver": "NONE",
             "bit_slip": 0,
-            "metadata": {"snr_est_db": snr_db}
+            "metadata": {"snr_est_db": snr_db, "mme_statistic": mme_stat}
         }
 
     # Stage 2: Coarse CFO & Clock Recovery
@@ -148,7 +156,9 @@ def run_full_pipeline(
     try:
         fsk_bits = None
         payload_raw = np.array([], dtype=np.complex64)
-        if mod_type in ["2-FSK", "4-FSK"]:
+        if mod_type in ["2-FSK", "4-FSK", "GMSK"]:
+            # GMSK is a binary continuous-phase FSK derivative (modulation index ~0.5); an FM
+            # discriminator is the correct receiver structure for it, not a linear I/Q slicer.
             num_tones = 4 if mod_type == "4-FSK" else 2
             fsk_bits = demodulate_fsk(x_bb, sps=sps, num_tones=num_tones)
             payload_raw, start_idx, sync_metric, phase_rad = resolve_sync_and_rotation(y_syms, mod_type="QPSK")
@@ -167,12 +177,17 @@ def run_full_pipeline(
         arbiter = BlackboardArbiter()
         symbols_eval = payload_syms if (payload_syms is not None and len(payload_syms) > 0) else y_syms
         pre_pll_eval = payload_raw if (payload_raw is not None and len(payload_raw) > 0) else y_syms
+        # The un-synchronised symbol stream is supplied as an extra hypothesis: if preamble
+        # correlation locked onto a false peak, the synced streams have had part of the payload
+        # sliced off and only this copy is still decodable.
+        aux_streams = [y_syms] if (start_idx > 0 and len(y_syms) > 0) else []
         results = arbiter.evaluate_stream(
             symbols=symbols_eval,
             mod_type=mod_type,
             fsk_bits=fsk_bits,
             pre_pll_symbols=pre_pll_eval,
-            ranked_mods=ranked_candidates
+            ranked_mods=ranked_candidates,
+            aux_symbol_streams=aux_streams
         )
     except Exception as e:
         return {"status": f"ERROR_ARBITER: {e}", "stage": "ARBITER", "format": fmt, "fs_hz": float(fs), "crc_valid": False, "payload": b""}
@@ -228,6 +243,9 @@ def run_full_pipeline(
         "spectrum_psd": spec_psd,
         "spec_freqs": spec_freqs,
         "spec_psd": spec_psd,
+        # Raw corrected baseband for the GUI time-frequency waterfall. Bounded so a long
+        # capture cannot balloon the result dict; the spectrogram needs no more than this.
+        "waterfall_iq": x_clean[:262144],
         "constellation_symbols": s_locked[:1000] if len(s_locked) > 0 else (payload_syms[:1000] if len(payload_syms) > 0 else y_syms[:1000]),
         "payload_syms": s_locked[:1000] if len(s_locked) > 0 else (payload_syms[:1000] if len(payload_syms) > 0 else y_syms[:1000])
     }

@@ -18,6 +18,7 @@ def _fast_pll_with_slip_detection(y: np.ndarray, mod_code: int, alpha: float = 0
     num_symbols = len(y)
     s_locked = np.zeros(num_symbols, dtype=np.complex64)
     grid_16qam = np.array([-3.0, -1.0, 1.0, 3.0], dtype=np.float32) / 3.16227766
+    grid_64qam = np.array([-7.0, -5.0, -3.0, -1.0, 1.0, 3.0, 5.0, 7.0], dtype=np.float32) / 6.48074069840786
 
     slip_count = 0
     slip_threshold = 1.5707963267948966  # pi/2
@@ -44,7 +45,24 @@ def _fast_pll_with_slip_detection(y: np.ndarray, mod_code: int, alpha: float = 0
             ang_slice = np.round(ang / 0.7853981633974483) * 0.7853981633974483
             e_phi = si * np.cos(ang_slice) - sr * np.sin(ang_slice)
             slip_threshold = 0.7853981633974483
-        else:  # 16-QAM / 64-QAM
+        elif mod_code == 4:  # 64-QAM (distinct 8-level grid from 16-QAM)
+            min_d_r = 1e9
+            i_h = grid_64qam[0]
+            for g in grid_64qam:
+                d = abs(sr - g)
+                if d < min_d_r:
+                    min_d_r = d
+                    i_h = g
+            min_d_i = 1e9
+            q_h = grid_64qam[0]
+            for g in grid_64qam:
+                d = abs(si - g)
+                if d < min_d_i:
+                    min_d_i = d
+                    q_h = g
+            e_phi = si * i_h - sr * q_h
+            slip_threshold = 1.5707963267948966
+        else:  # 16-QAM
             min_d_r = 1e9
             i_h = grid_16qam[0]
             for g in grid_16qam:
@@ -86,14 +104,14 @@ def _fast_pll_with_slip_detection(y: np.ndarray, mod_code: int, alpha: float = 0
 
 # Warmup JIT PLL for all modulation types on module import
 _dummy_pll = np.ones(20, dtype=np.complex64)
-for _c in range(4):
+for _c in range(5):
     _ = _fast_pll_with_slip_detection(_dummy_pll, _c)
 
 def track_carrier_pll(y: np.ndarray, mod_type: str = "QPSK") -> np.ndarray:
     """JIT-accelerated 2nd-order decision-directed Costas/EKF loop for phase tracking."""
     if len(y) == 0:
         return y
-    mod_map = {"BPSK": 0, "GMSK": 0, "QPSK": 1, "8PSK": 2, "16-QAM": 3, "64-QAM": 3}
+    mod_map = {"BPSK": 0, "GMSK": 0, "QPSK": 1, "8PSK": 2, "16-QAM": 3, "64-QAM": 4}
     mod_code = mod_map.get(mod_type, 1)
     s_locked, _ = _fast_pll_with_slip_detection(y.astype(np.complex64), mod_code, EKF_ALPHA, EKF_BETA)
     return s_locked

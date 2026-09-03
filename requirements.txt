@@ -1,4 +1,5 @@
-numpy>=1.24.0
+numpy>=1.24.0,<2.3.0
+numba>=0.59.0
 scipy>=1.10.0
 scikit-commpy>=0.8.0
 galois>=0.3.6
