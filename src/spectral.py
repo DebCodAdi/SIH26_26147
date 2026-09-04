@@ -137,7 +137,8 @@ def estimate_baud_rate(x_bb: np.ndarray, fs: float) -> tuple[float, float]:
     than one path's argmax, so candidates that two paths corroborate are preferred, and the
     peak is parabolically interpolated for sub-bin resolution.
 
-    Returns (baud_rate_hz, confidence) where confidence is the whitened peak height.
+    Returns (baud_rate_hz, confidence) where confidence in [0, 1] is how many independent
+    feature paths corroborated the chosen line (0.0 = none, i.e. do not trust the value).
     """
     n = len(x_bb)
     if n < 64:
@@ -187,7 +188,7 @@ def estimate_baud_rate(x_bb: np.ndarray, fs: float) -> tuple[float, float]:
         bw_estimate = 0.0
 
     tol = max(fs * 0.01, 1.0)
-    best_rs, best_score = candidates[0][0], -1.0
+    best_rs, best_score, best_agree = candidates[0][0], -1.0, 0
     for i, (f_i, c_i) in enumerate(candidates):
         agree = sum(1 for j, (f_j, _) in enumerate(candidates) if j != i and abs(f_j - f_i) < tol)
         score = c_i * (1.0 + 2.0 * agree)
@@ -200,14 +201,27 @@ def estimate_baud_rate(x_bb: np.ndarray, fs: float) -> tuple[float, float]:
             elif ratio < 0.4 or ratio > 2.2:
                 score *= 0.2
         if score > best_score:
-            best_score, best_rs = score, f_i
+            best_score, best_rs, best_agree = score, f_i, agree
 
     # If no detected line is plausible against a *trusted* bandwidth measurement, prefer the
     # bandwidth-derived symbol rate — it degrades far more gracefully than a line argmax.
     if bw_estimate > 0.0 and not (0.7 <= best_rs / bw_estimate <= 1.45):
         best_rs = bw_estimate
+        best_agree = 0
 
-    best_conf = max(c for _, c in candidates)
+    # Confidence is CORROBORATION between independent feature paths, not peak height.
+    # Peak height is not a reliability measure here: the whitened spectrum always has peaks
+    # above its own median, so the old value sat at ~3.1-3.5 whether the answer was right
+    # (50 kHz) or garbage (67 kHz at 0 dB). Corroboration is calibrated against correctness --
+    # measured median symbol-rate error, true rate 50 kHz, 24 captures per SNR:
+    #     SNR    paths agree -> error     no path agrees -> error
+    #     30 dB              0 Hz                     39286 Hz
+    #     20 dB           6270 Hz                     39662 Hz
+    #     15 dB          10583 Hz                     33810 Hz
+    #     10 dB          14286 Hz                     33565 Hz
+    #      5 dB   (never agrees)                      22287 Hz
+    # so 0.0 genuinely means "do not trust this number", which is what a caller needs.
+    best_conf = min(1.0, best_agree / 2.0)
     return float(best_rs), float(best_conf)
 
 
@@ -251,124 +265,160 @@ def estimate_occupied_bandwidth(x: np.ndarray, fs: float, energy_fraction: float
     return float(abs(freqs[hi] - freqs[lo]))
 
 
-def estimate_cfo_and_baud(x: np.ndarray, fs: float) -> tuple[float, float, float, np.ndarray]:
+def estimate_cfo_and_baud(x: np.ndarray, fs: float,
+                          diag: dict | None = None) -> tuple[float, float, float, np.ndarray]:
     """
-    Estimates coarse CFO across full Nyquist band (|f| <= 0.45 Fs) using M-th power non-linear
-    carrier recovery & Welch PSD, with parabolic peak interpolation.
-    Extracts multi-path baud rate (Rs, SPS) via envelope-squared, instantaneous frequency differential,
+    Estimates the carrier frequency offset by M-th power non-linear carrier recovery applied to
+    symbol-rate samples, with the modulation order chosen by phase-symmetry nesting and the
+    modulo ambiguity resolved against a coarse PSD-centroid estimate.
+    Extracts the baud rate (Rs, SPS) via envelope-squared, instantaneous frequency differential,
     and delay-and-multiply cyclostationary lines. Wipes carrier offset.
+
+    If `diag` is a dict it is populated with per-estimate diagnostics, notably
+    'baud_confidence' in [0, 1]: 0.0 means no independent feature path corroborated the
+    symbol-rate line, i.e. the returned baud rate must not be trusted. The 4-tuple return is
+    unchanged so existing callers keep working.
     """
-    n_len = min(len(x), 32768)
-    x_sub = x[:n_len]
-    
-    # Adaptive FFT resolution
-    n_fft = min(65536, max(4096, 2**int(np.ceil(np.log2(len(x_sub))))))
-    w = np.hanning(len(x_sub))
-    df = fs / n_fft
-
-    # Widen search to full Nyquist baseband (|f_cfo| <= 0.45 * fs)
-    max_cfo = fs * 0.45
-
-    # 1. x^4 line for QPSK / 16-QAM
-    x4 = (x_sub ** 4) * w
-    fft_x4 = np.abs(np.fft.fft(x4, n_fft))
-    f_bins4 = np.fft.fftfreq(n_fft, d=1.0/fs)
-    mask4 = np.abs(f_bins4) <= (4.0 * max_cfo)
-    fft_x4_masked = fft_x4.copy()
-    fft_x4_masked[~mask4] = 0.0
-    idx4 = int(np.argmax(fft_x4_masked))
-    a4, b4, c4 = fft_x4[(idx4-1)%n_fft], fft_x4[idx4], fft_x4[(idx4+1)%n_fft]
-    denom4 = (2.0 * b4 - a4 - c4)
-    delta4 = 0.5 * (c4 - a4) / denom4 if abs(denom4) > 1e-12 else 0.0
-    f_est4 = float((f_bins4[idx4] + delta4 * df) / 4.0)
-    snr4 = float(fft_x4[idx4] / (np.mean(fft_x4[mask4]) + 1e-12)) if np.any(mask4) else 0.0
-
-    # 2. x^2 line for BPSK / 2-FSK
-    x2 = (x_sub ** 2) * w
-    fft_x2 = np.abs(np.fft.fft(x2, n_fft))
-    f_bins2 = np.fft.fftfreq(n_fft, d=1.0/fs)
-    mask2 = np.abs(f_bins2) <= (2.0 * max_cfo)
-    fft_x2_masked = fft_x2.copy()
-    fft_x2_masked[~mask2] = 0.0
-    idx2 = int(np.argmax(fft_x2_masked))
-    a2, b2, c2 = fft_x2[(idx2-1)%n_fft], fft_x2[idx2], fft_x2[(idx2+1)%n_fft]
-    denom2 = (2.0 * b2 - a2 - c2)
-    delta2 = 0.5 * (c2 - a2) / denom2 if abs(denom2) > 1e-12 else 0.0
-    f_est2 = float((f_bins2[idx2] + delta2 * df) / 2.0)
-    snr2 = float(fft_x2[idx2] / (np.mean(fft_x2[mask2]) + 1e-12)) if np.any(mask2) else 0.0
-
-    # 3. x^8 line for 8-PSK
-    x8 = (x_sub ** 8) * w
-    fft_x8 = np.abs(np.fft.fft(x8, n_fft))
-    f_bins8 = np.fft.fftfreq(n_fft, d=1.0/fs)
-    mask8 = np.abs(f_bins8) <= (8.0 * max_cfo)
-    fft_x8_masked = fft_x8.copy()
-    fft_x8_masked[~mask8] = 0.0
-    idx8 = int(np.argmax(fft_x8_masked))
-    a8, b8, c8 = fft_x8[(idx8-1)%n_fft], fft_x8[idx8], fft_x8[(idx8+1)%n_fft]
-    denom8 = (2.0 * b8 - a8 - c8)
-    delta8 = 0.5 * (c8 - a8) / denom8 if abs(denom8) > 1e-12 else 0.0
-    f_est8 = float((f_bins8[idx8] + delta8 * df) / 8.0)
-    snr8 = float(fft_x8[idx8] / (np.mean(fft_x8[mask8]) + 1e-12)) if np.any(mask8) else 0.0
-
-    # 4. Welch PSD peak for tone / carrier presence (coarse frequency centroid)
+    # ------------------------------------------------------------------------------------
+    # Carrier recovery: M-th power applied to SYMBOL-RATE samples.
+    #
+    # x**M strips the modulation only if the samples are close to ideal constellation points.
+    # Applied to the oversampled, pulse-shaped waveform (as this function previously did) the
+    # inter-symbol transitions are not constellation points, so x**M smears energy instead of
+    # producing a clean line -- and the smearing compounds with M, which is why x**8 (the only
+    # valid order for 8PSK) was worst affected. Measured at 30 dB, 8PSK carrier error:
+    # full-rate 2883 Hz, symbol-rate 3.8 Hz.
+    #
+    # Doing timing before carrier is not circular: the symbol rate is estimated from the power
+    # envelope |x|^2, which is invariant to carrier offset, since |x*exp(j*2*pi*f*n/fs)| == |x|.
+    # ------------------------------------------------------------------------------------
     nperseg = min(len(x), 4096)
     freqs, psd = scipy.signal.welch(x, fs, return_onesided=False, nperseg=nperseg)
     freqs_c, psd_c = np.fft.fftshift(freqs), np.fft.fftshift(psd)
-    k_peak = int(np.argmax(psd_c))
-    f_est_psd = float(freqs_c[k_peak])
+    _net = np.maximum(psd_c - float(np.percentile(psd_c, 25)), 0.0)
+    # Power-weighted centroid: the occupied band of a linearly modulated signal is symmetric
+    # about its carrier, so this is a coarse but noise-robust carrier estimate (measured
+    # accurate to <=1.3 kHz at 30 dB). It is used only to resolve the modulo ambiguity of the
+    # fine estimate below. The PSD argmax, used previously, is merely the loudest bin inside a
+    # noisy modulated band and read 18.7 kHz on a signal whose true offset was 150 Hz.
+    f_coarse = float(np.sum(freqs_c * _net) / (np.sum(_net) + 1e-20))
 
-    # Disambiguate M-th power estimates by aligning with coarse PSD centroid
-    f_est2 = float(f_est2 + round((f_est_psd - f_est2) / (fs / 2.0)) * (fs / 2.0))
-    f_est4 = float(f_est4 + round((f_est_psd - f_est4) / (fs / 4.0)) * (fs / 4.0))
-    f_est8 = float(f_est8 + round((f_est_psd - f_est8) / (fs / 8.0)) * (fs / 8.0))
+    rs_pre, _ = estimate_baud_rate(x, fs)
+    f_cfo = f_coarse
+    if np.isfinite(rs_pre) and rs_pre > 0:
+        decim = max(1, int(round(fs / rs_pre)))
+        # Pick the decimation phase carrying the most energy (crude eye-opening choice).
+        best_phase, best_energy = 0, -1.0
+        for phase in range(decim):
+            energy = float(np.sum(np.abs(x[phase::decim]) ** 2))
+            if energy > best_energy:
+                best_energy, best_phase = energy, phase
+        z = x[best_phase::decim]
 
-    # Select best CFO estimate by comparing non-linear carrier lines.
-    # Cross-validate against the 3-way consensus median first: a rectangular/wide-sidelobe
-    # pulse shape can put a spurious spectral line at a +-symbol-rate offset from the true
-    # M-th power carrier tone, which can occasionally out-score the true line in a single
-    # candidate while the other two (different M, different sidelobe sensitivity) still land
-    # near the truth. Down-weight any candidate that disagrees with the consensus median by
-    # more than a modest fraction of Fs before ranking by raw SNR score.
-    med_f = float(np.median([f_est2, f_est4, f_est8]))
-    consensus_tol = max(fs * 0.01, 5.0)
-    raw_scores = [snr2 / 1.5, snr4 / 1.0, snr8 / 0.8]
-    f_ests = [f_est2, f_est4, f_est8]
-    scores = [
-        (raw_scores[i] if abs(f_ests[i] - med_f) < consensus_tol else raw_scores[i] * 0.1, f_ests[i])
-        for i in range(3)
-    ]
-    scores.sort(key=lambda item: item[0], reverse=True)
-    best_score, best_f = scores[0]
+        if len(z) >= 32:
+            fs_dec = fs / decim
+            n_fft_d = int(min(65536, max(4096, 2 ** int(np.ceil(np.log2(len(z)))) * 8)))
+            w_d = np.hanning(len(z))
+            df_dec = fs_dec / n_fft_d
+            f_est = {}
+            line_significance = {}
+            for M in (2, 4, 8):
+                fft_m = np.abs(np.fft.fft((z ** M) * w_d, n_fft_d))
+                bins_m = np.fft.fftfreq(n_fft_d, d=1.0 / fs_dec)
+                idx = int(np.argmax(fft_m))
+                a, b, c = fft_m[(idx - 1) % n_fft_d], fft_m[idx], fft_m[(idx + 1) % n_fft_d]
+                denom = (2.0 * b - a - c)
+                delta = 0.5 * (c - a) / denom if abs(denom) > 1e-12 else 0.0
+                f_raw = float((bins_m[idx] + delta * df_dec) / M)
+                # The M-th power estimate is ambiguous modulo fs_dec/M; take the
+                # representative nearest the coarse centroid.
+                ambiguity = fs_dec / M
+                f_est[M] = f_raw + round((f_coarse - f_raw) / ambiguity) * ambiguity
+                # Peak-to-median WITHIN this order's own spectrum. This is a valid statistic
+                # (unlike comparing peak heights ACROSS orders) because it asks only whether
+                # this spectrum contains a line at all.
+                line_significance[M] = float(fft_m[idx] / (np.median(fft_m) + 1e-12))
 
-    if best_score >= 2.5:
-        f_cfo = best_f
-    elif abs(f_est_psd) > fs * 0.05:
-        if 0 < k_peak < len(psd_c) - 1:
-            alpha, beta, gamma = float(psd_c[k_peak - 1]), float(psd_c[k_peak]), float(psd_c[k_peak + 1])
-            denom = alpha - 2.0 * beta + gamma
-            delta = 0.5 * (alpha - gamma) / denom if abs(denom) > 1e-12 else 0.0
-            f_cfo = float(freqs_c[k_peak] + delta * (freqs_c[1] - freqs_c[0]))
-        else:
-            f_cfo = f_est_psd
-    else:
-        f_cfo = 0.0
+            # Order selection by phase-symmetry NESTING, not by line strength. Comparing
+            # strength across orders is ill posed: each power transforms the noise
+            # differently, so peak/mean (and a robust peak/MAD z-score, also tested) are
+            # biased toward low M regardless of whether a coherent line exists -- for 8PSK,
+            # whose only valid order is M=8, every strength statistic still ranked M=2 first.
+            # The removable symmetries are nested instead:
+            #     BPSK   (2-fold): x^2, x^4, x^8 all yield a line
+            #     QPSK   (4-fold):      x^4, x^8 yield a line
+            #     16-QAM (4-fold):      x^4, x^8 yield a line
+            #     8PSK   (8-fold):           only x^8 yields a line
+            # so a valid order is corroborated by the next higher order while an invalid
+            # order's argmax is noise and agrees with nothing. Pick the LOWEST corroborated
+            # order, because x^M multiplies the frequency error by M.
+            # Tolerance is a few bins of the decimated resolution; sweeping it over 8/16/32
+            # bins left BPSK, QPSK and 8PSK selections unchanged, so it is not knife-edge.
+            #
+            # When nothing corroborates, the previous code fell through to f_est[8] -- the
+            # LEAST reliable candidate, since x^8 amplifies noise the most. That is backwards,
+            # and it was the dominant source of carrier-recovery variance at 20 dB: measured
+            # over 8 QPSK seeds, f_est[4] was correct to 1.0-14.3 Hz on every one, yet f8 was
+            # selected on 7 of 8 because |f4-f8| (139-4255 Hz) exceeded the tolerance. Feeding
+            # that wrong offset downstream drove pre-FEC BER to 0.40-1.00; supplying the true
+            # offset to the same chain gave BER 0.0000 on 7 of those 8 seeds.
+            #
+            # So f8 is used as a last resort only when the x^8 spectrum actually contains a
+            # line. The bound is derived, not tuned: for pure complex Gaussian noise the |FFT|
+            # magnitudes are Rayleigh and the expected ratio of the maximum over N bins to the
+            # median is sqrt(ln N / ln 2). Monte-Carlo over 200 noise realisations puts the
+            # 95th percentile at 3.44-3.76 for the transform sizes used here, against a
+            # predicted 3.46-3.87, so a peak below that is indistinguishable from noise.
+            # Measured line significance at M=8: 8.7 for 8PSK at 30 dB (a real line) versus
+            # 2.1-2.7 for every modulation at 20 dB (no line for anyone, 8PSK included).
+            tol = 8.0 * df_dec
+            noise_floor_ratio = float(np.sqrt(np.log(n_fft_d) / np.log(2.0)))
+            if abs(f_est[2] - f_est[4]) < tol:
+                f_cfo = f_est[2]
+            elif abs(f_est[4] - f_est[8]) < tol:
+                f_cfo = f_est[4]
+            elif line_significance[8] > noise_floor_ratio:
+                f_cfo = f_est[8]
+            else:
+                f_cfo = f_est[4]
 
     # Wipe coarse CFO
     n = np.arange(len(x))
     x_bb = x * np.exp(-1j * 2.0 * np.pi * f_cfo * n / fs)
 
     # 5. Baud Rate Extraction via segment-averaged cyclostationary line detection.
-    rs, best_prom = estimate_baud_rate(x_bb, fs)
+    rs, baud_conf = estimate_baud_rate(x_bb, fs)
 
-    # 6. Check for 1 SPS (unfiltered symbol-spaced captures)
-    r1 = np.abs(np.corrcoef(x_bb[1:], x_bb[:-1])[0, 1]) if len(x_bb) > 2 else 0.0
-    if r1 < 0.25 or best_prom < 1.5:
-        rs = float(fs)
-        sps = 1.0
-    else:
-        rs = max(rs, fs * 0.005)
-        sps = float(np.clip(fs / rs, 1.0, 50.0))
+    # 6. Symbol-spaced (1 SPS) capture detection.
+    #
+    # This previously read `if r1 < 0.25 or best_prom < 1.5: rs = fs`, where r1 is the
+    # adjacent-sample correlation. That asserted a symbol-spaced capture whenever adjacent
+    # samples were weakly correlated -- but noise decorrelates adjacent samples too, so a
+    # perfectly ordinary 4-samples-per-symbol capture trips it once SNR drops. Measured on a
+    # 200 kHz capture of a 50 kBaud signal (true answer 50 kHz, sps 4):
+    #     30 dB r1=0.889   20 dB r1=0.751   15 dB r1=0.553
+    #     10 dB r1=0.308    5 dB r1=0.140 -> fires -> reports rs = Fs = 200000 (150 kHz error)
+    # i.e. the single worst symbol-rate error in the benchmark was fabricated by this line,
+    # and reported with no indication that it was a guess.
+    #
+    # Low adjacent correlation is therefore NOT sufficient evidence of a symbol-spaced
+    # capture; at low SNR it is indistinguishable from a noise-dominated oversampled one.
+    # Rather than fabricate Fs, keep the measured cyclostationary estimate and let
+    # `baud_confidence` (0.0 when no independent feature path corroborates it) tell the caller
+    # the number is untrustworthy. Distinguishing a genuine 1 SPS capture at low SNR needs a
+    # different detector and is recorded as future work in IMPROVEMENTS.md.
+    r1 = float(np.abs(np.corrcoef(x_bb[1:], x_bb[:-1])[0, 1])) if len(x_bb) > 2 else 0.0
+    rs = max(rs, fs * 0.005)
+    sps = float(np.clip(fs / rs, 1.0, 50.0))
+
+    if diag is not None:
+        diag.update({
+            "baud_confidence": float(baud_conf),
+            "baud_rate_hz": float(rs),
+            "sps": float(sps),
+            "adjacent_correlation": r1,
+            "cfo_hz": float(f_cfo),
+        })
 
     return f_cfo, rs, sps, x_bb.astype(np.complex64)
 

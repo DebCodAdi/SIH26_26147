@@ -73,7 +73,9 @@ def main():
         print(f"Winning Branch:    {result.get('branch_name', 'NONE')}")
         print(f"Detected Mod:      {result.get('modulation', 'UNKNOWN')}")
         print(f"CFO Estimate:      {result.get('cfo_hz', 0.0):.3f} Hz")
-        print(f"Baud Rate:         {result.get('baud_rate', 0.0):.2f} Baud (Est SPS: {result.get('sps', 0.0):.2f})")
+        _bconf = result.get('baud_confidence', 0.0)
+        _bflag = "UNRELIABLE - no corroborating feature path" if _bconf <= 0.0 else f"confidence {_bconf:.1f}"
+        print(f"Baud Rate:         {result.get('baud_rate', 0.0):.2f} Baud (Est SPS: {result.get('sps', 0.0):.2f}) [{_bflag}]")
         print(f"FEC Type:          {result.get('fec_type', 'NONE')}")
         print(f"Interleaver:       {result.get('interleaver', 'NONE')}")
         print(f"Bit Slip:          {result.get('bit_slip', 0)}")

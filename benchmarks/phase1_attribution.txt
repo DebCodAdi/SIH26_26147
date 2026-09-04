@@ -1,0 +1,37 @@
+==============================================================================
+  PHASE 1 - LOW-SNR FAILURE ATTRIBUTION
+==============================================================================
+  Files analysed (SNR <= cutoff): 118
+  Attribution = FIRST stage out of tolerance, in pipeline order.
+  Tolerances: baud 1% relative | SPS 0.1 | CFO a quarter cycle over the record
+              | AMC exact | BER>0.2 timing | BER>0.01 demodulation
+
+  Failure stage totals
+  ------------------------------------------------------------
+   1_burst_detection                  14     11.9%
+   6_baud_estimation                 103     87.3%
+   7_coarse_cfo                        1      0.8%
+  ------------------------------------------------------------
+
+  Failure matrix: stage x SNR band
+  ------------------------------------------------------------
+   stage                               0-5 dB   5-10 dB  10-15 dB
+  ------------------------------------------------------------
+   1_burst_detection                       14         0         0
+   6_baud_estimation                       36        33        34
+   7_coarse_cfo                             0         0         1
+  ------------------------------------------------------------
+
+  Failure matrix: stage x modulation
+  --------------------------------------------------------------------------------------------
+   stage                               16-QAM     2-FSK     4-FSK      8PSK      BPSK      QPSK
+  --------------------------------------------------------------------------------------------
+   1_burst_detection                        2         0         0         3         5         4
+   6_baud_estimation                       15        23        18        16        17        14
+   7_coarse_cfo                             0         0         0         0         1         0
+  --------------------------------------------------------------------------------------------
+
+  Baud confidence (Finding 3 metric) vs outcome
+   conf=0.0:   98 files, decoded   0 (  0.0%)
+   conf=0.5:   20 files, decoded   0 (  0.0%)
+==============================================================================

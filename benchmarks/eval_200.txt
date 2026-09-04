@@ -1,0 +1,75 @@
+==============================================================================
+  PS 26147 PIPELINE EVALUATION REPORT   (seed=26147, n=200)
+==============================================================================
+
+1. Overall
+   Modulation Classification (AMC)       76/200    38.0%
+   FEC Code Identification               60/200    30.0%
+   CRC-32 Locked Decodes                 17/200     8.5%
+   Pipeline Crashes / Exceptions          0/200     0.0%
+   Combined Score                        --       25.5%
+
+   Combined Score = unweighted mean of the three rates above
+   (AMC + FEC identification + CRC-locked decode) / 3.
+   Crashes are counted as failures in all three, never excluded.
+   FEC identification is only reported by the pipeline on a CRC lock, so it
+   cannot exceed the decode rate except on genuinely uncoded (NONE) files.
+
+   Total Files Tested    : 200
+   Total Wall-Clock Time : 173.69 s
+   Median Latency / File : 2038.1 ms
+
+2. Per-Modulation Classification Breakdown
+   --------------------------------------------------------------
+   Modulation     Correct/Total    Accuracy    Rating
+   --------------------------------------------------------------
+   BPSK                   13/34       38.2%      [XX]
+   QPSK                   24/34       70.6%      [~~]
+   8PSK                    4/33       12.1%      [XX]
+   16-QAM                  7/33       21.2%      [XX]
+   2-FSK                  17/33       51.5%      [XX]
+   4-FSK                  11/33       33.3%      [XX]
+   --------------------------------------------------------------
+   Rating: [OK] >=85%   [~~] 60-85%   [XX] <60%
+
+3. Per-SNR Breakdown
+   --------------------------------------------------------------------
+      SNR         AMC      Decode     med Bauderr     med CFOerr
+   --------------------------------------------------------------------
+       0        8.0%        0.0%     24000.00 Hz     1006.02 Hz
+       5       36.0%        0.0%     20306.73 Hz     1983.21 Hz
+      10       42.4%        0.0%     15597.56 Hz     2554.16 Hz
+      15       40.0%        0.0%      9399.11 Hz      207.04 Hz
+      20       48.4%       12.9%     10155.77 Hz     1109.76 Hz
+      25       48.3%       20.7%        24.31 Hz        2.59 Hz
+      30       36.4%       31.8%       900.00 Hz        4.11 Hz
+   --------------------------------------------------------------------
+
+4. Confusion Matrix  (rows = true, columns = predicted)
+   ------------------------------------------------------------------------------------------------------
+   true \ pred     16-QAM     2-FSK     4-FSK    64-QAM      8PSK      BPSK      GMSK     NOISE      QPSK
+   ------------------------------------------------------------------------------------------------------
+   BPSK                 2         1         0         1         1        13         0         5        11
+   QPSK                 1         1         1         0         0         2         1         4        24
+   8PSK                 1         2         1         1         4         2         1         3        18
+   16-QAM               7         1         2         2         2         5         0         2        12
+   2-FSK                0        17         2         0         2         1         5         0         6
+   4-FSK                0         2        11         0         4         2         3         0        11
+   ------------------------------------------------------------------------------------------------------
+
+5. Parameter Accuracy  (absolute error)
+   ----------------------------------------------------------
+   Parameter               Median        90th pct
+   ----------------------------------------------------------
+   Fs                     0.00 Hz         0.00 Hz
+   Baud               12779.70 Hz     53644.12 Hz
+   SPS                       1.58            7.00
+   CFO                  706.49 Hz     12499.32 Hz
+   ----------------------------------------------------------
+
+   Fs is supplied to the pipeline (user_fs) for every file in this corpus,
+   so its error reflects pass-through fidelity, not blind estimation.
+==============================================================================
+
+Per-file results written to benchmarks/eval_200.csv
+Corpus manifest written to benchmarks/corpus_manifest.json

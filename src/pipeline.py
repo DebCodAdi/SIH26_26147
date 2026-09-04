@@ -121,7 +121,8 @@ def run_full_pipeline(
 
     # Stage 2: Coarse CFO & Clock Recovery
     try:
-        cfo_hz, rs, sps, x_bb = estimate_cfo_and_baud(x_clean, fs=fs)
+        spectral_diag: dict = {}
+        cfo_hz, rs, sps, x_bb = estimate_cfo_and_baud(x_clean, fs=fs, diag=spectral_diag)
         if rs < 100 or rs > fs / 2:
             # Baud rate unreasonable, try alternative estimation
             rs = 1000.0
@@ -224,6 +225,9 @@ def run_full_pipeline(
         "fs_estimated": bool(user_fs is None or user_fs <= 0),
         "cfo_hz": float(cfo_hz),
         "baud_rate": float(rs),
+        # 0.0 means no independent feature path corroborated the symbol-rate line, i.e. the
+        # baud/SPS figures above are a guess and must not be trusted.
+        "baud_confidence": float(spectral_diag.get("baud_confidence", 0.0)),
         "sps": float(sps),
         "modulation": mod_type,
         "ood_dist": float(ood_dist),
